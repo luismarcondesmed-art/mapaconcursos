@@ -1,0 +1,565 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  Search, Plus, Calendar, Clock, DollarSign, FileText, 
+  Link as LinkIcon, Building2, X, AlertCircle, 
+  Moon, Sun, LayoutGrid, List as ListIcon, ChevronDown, ChevronUp, Trash2
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } from 'firebase/firestore';
+
+// Inicialização do Firebase usando variáveis de ambiente (Preparado para Vercel / Vite)
+let app, auth, db;
+const appId = 'banco-concursos-producao'; // ID fixo para a sua coleção no Firestore
+
+try {
+  // Lê as variáveis de ambiente.
+  // Nota: Se usar Next.js mude "import.meta.env.VITE_" para "process.env.NEXT_PUBLIC_"
+  // Se usar Create React App, mude para "process.env.REACT_APP_"
+  const firebaseConfig = {
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID
+  };
+  
+  app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+} catch (error) {
+  console.error("Erro ao inicializar o Firebase. Verifique as configurações das variáveis de ambiente.", error);
+}
+
+export default function App() {
+  const [concursos, setConcursos] = useState([]);
+  const [user, setUser] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  
+  // Estados de UI e Preferências
+  const [busca, setBusca] = useState('');
+  const [isModalAberto, setIsModalAberto] = useState(false);
+  const [theme, setTheme] = useState('light');
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' ou 'list'
+  const [expandedId, setExpandedId] = useState(null); // Para o dropdown da lista
+
+  const [form, setForm] = useState({
+    concurso: '', banca: '', dataProva: '', dataInscricao: '', 
+    salario: '', horas: '', edital: '', valor: '', linkUtil: ''
+  });
+
+  // Autenticação (Login anónimo necessário para aceder ao Firestore com segurança)
+  useEffect(() => {
+    if (!auth) return;
+    
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (error) {
+        console.error("Erro de autenticação anónima:", error);
+      }
+    };
+    
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // Sincronização em tempo real com o Firestore
+  useEffect(() => {
+    if (!user || !db) return;
+
+    // Estrutura de coleção para os dados
+    const concursosRef = collection(db, 'artifacts', appId, 'public', 'data', 'concursos');
+    
+    const unsubscribe = onSnapshot(concursosRef, (snapshot) => {
+      const docs = [];
+      snapshot.forEach(doc => {
+        docs.push({ id: doc.id, ...doc.data() });
+      });
+      // Ordena pelos mais recém adicionados
+      setConcursos(docs.sort((a, b) => b.criadoEm - a.criadoEm));
+      setCarregando(false);
+    }, (error) => {
+      console.error("Erro ao procurar dados do Firestore:", error);
+      setCarregando(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Alterna a classe dark no elemento raiz para o modo escuro
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  const concursosFiltrados = useMemo(() => {
+    return concursos.filter(c => 
+      c.concurso.toLowerCase().includes(busca.toLowerCase()) || 
+      c.banca.toLowerCase().includes(busca.toLowerCase())
+    );
+  }, [concursos, busca]);
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!user || !db) return;
+
+    try {
+      const concursosRef = collection(db, 'artifacts', appId, 'public', 'data', 'concursos');
+      await addDoc(concursosRef, {
+        ...form,
+        criadoEm: Date.now(),
+        criadoPor: user.uid
+      });
+      
+      setIsModalAberto(false);
+      setForm({
+        concurso: '', banca: '', dataProva: '', dataInscricao: '', 
+        salario: '', horas: '', edital: '', valor: '', linkUtil: ''
+      });
+    } catch (error) {
+      console.error("Erro ao adicionar concurso:", error);
+    }
+  };
+
+  const deletarConcurso = async (id, e) => {
+    e.stopPropagation(); // Evita abrir o dropdown ao clicar em deletar
+    if (!user || !db || !window.confirm("Tem a certeza que deseja remover este concurso?")) return;
+    
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'concursos', id));
+    } catch (error) {
+      console.error("Erro ao deletar concurso:", error);
+    }
+  };
+
+  const toggleExpand = (id) => {
+    setExpandedId(expandedId === id ? null : id);
+  };
+
+  const formatarData = (dataString) => {
+    if (!dataString) return 'Não definida';
+    const partes = dataString.split('-');
+    if (partes.length !== 3) return dataString;
+    return `${partes[2]}/${partes[1]}/${partes[0]}`;
+  };
+
+  const inscricaoAcabando = (dataString) => {
+    if (!dataString) return false;
+    const dataInscricao = new Date(dataString);
+    const hoje = new Date();
+    const diffTempo = dataInscricao - hoje;
+    const diffDias = Math.ceil(diffTempo / (1000 * 60 * 60 * 24));
+    return diffDias >= 0 && diffDias <= 7;
+  };
+
+  return (
+    <div className={`min-h-screen font-sans transition-colors duration-200 ${theme === 'dark' ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-800'}`}>
+      
+      {/* Header */}
+      <header className={`${theme === 'dark' ? 'bg-slate-900 border-b border-slate-800' : 'bg-indigo-700'} text-white shadow-md sticky top-0 z-10 transition-colors`}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            
+            {/* Logo */}
+            <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
+              <div className="flex items-center gap-2">
+                <Building2 size={28} className={theme === 'dark' ? 'text-indigo-400' : 'text-indigo-200'} />
+                <h1 className="text-2xl font-bold tracking-tight">Banco de Concursos</h1>
+              </div>
+              
+              {/* Botão Mobile Theme Toggle */}
+              <button 
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                className="md:hidden p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+              >
+                {theme === 'dark' ? <Sun size={20} className="text-yellow-400" /> : <Moon size={20} />}
+              </button>
+            </div>
+            
+            <div className="flex w-full md:w-auto items-center gap-3 flex-wrap sm:flex-nowrap">
+              {/* Busca */}
+              <div className="relative w-full sm:w-64 order-3 sm:order-1">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Search size={18} className={theme === 'dark' ? 'text-slate-400' : 'text-indigo-200'} />
+                </div>
+                <input
+                  type="text"
+                  placeholder="Procurar concurso ou banca..."
+                  className={`block w-full pl-10 pr-3 py-2 border rounded-lg leading-5 focus:outline-none focus:ring-2 sm:text-sm transition-colors ${
+                    theme === 'dark' 
+                      ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-400 focus:bg-slate-700 focus:ring-indigo-500' 
+                      : 'bg-indigo-800 border-transparent text-indigo-100 placeholder-indigo-300 focus:bg-white focus:text-slate-900 focus:ring-indigo-500'
+                  }`}
+                  value={busca}
+                  onChange={(e) => setBusca(e.target.value)}
+                />
+              </div>
+
+              {/* Controles de Visualização */}
+              <div className={`flex rounded-lg p-1 order-1 sm:order-2 ${theme === 'dark' ? 'bg-slate-800' : 'bg-indigo-800/50'}`}>
+                <button 
+                  onClick={() => setViewMode('grid')} 
+                  className={`p-1.5 rounded-md transition-colors ${viewMode === 'grid' ? (theme === 'dark' ? 'bg-indigo-500 text-white' : 'bg-indigo-600 text-white') : (theme === 'dark' ? 'text-slate-400 hover:text-white' : 'text-indigo-200 hover:text-white')}`}
+                  title="Modo Grelha"
+                >
+                  <LayoutGrid size={18}/>
+                </button>
+                <button 
+                  onClick={() => setViewMode('list')} 
+                  className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? (theme === 'dark' ? 'bg-indigo-500 text-white' : 'bg-indigo-600 text-white') : (theme === 'dark' ? 'text-slate-400 hover:text-white' : 'text-indigo-200 hover:text-white')}`}
+                  title="Modo Lista"
+                >
+                  <ListIcon size={18}/>
+                </button>
+              </div>
+              
+              {/* Theme Toggle Desktop */}
+              <button 
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                className="hidden md:flex p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors order-2 sm:order-3"
+                title="Alternar Tema"
+              >
+                {theme === 'dark' ? <Sun size={20} className="text-yellow-400" /> : <Moon size={20} />}
+              </button>
+
+              {/* Botão Adicionar */}
+              <button
+                onClick={() => setIsModalAberto(true)}
+                className="flex items-center justify-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm w-full sm:w-auto order-4"
+              >
+                <Plus size={18} />
+                <span>Adicionar</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Conteúdo Principal */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        {carregando ? (
+          <div className="flex justify-center items-center py-20">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500"></div>
+          </div>
+        ) : concursosFiltrados.length === 0 ? (
+          <div className={`text-center py-16 rounded-xl shadow-sm border ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+            <AlertCircle size={48} className={`mx-auto mb-4 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`} />
+            <h3 className={`text-lg font-medium ${theme === 'dark' ? 'text-slate-200' : 'text-slate-900'}`}>Nenhum concurso encontrado</h3>
+            <p className={`mt-1 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Tente procurar por outro termo ou adicione um novo concurso.</p>
+          </div>
+        ) : viewMode === 'grid' ? (
+          
+          /* MODO GRELHA (Cards) */
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {concursosFiltrados.map((item) => (
+              <div key={item.id} className={`rounded-xl shadow-sm border hover:shadow-md transition-shadow overflow-hidden flex flex-col ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                
+                {/* Cabeçalho do Card */}
+                <div className={`p-5 border-b flex-grow ${theme === 'dark' ? 'bg-slate-800/80 border-slate-700' : 'bg-slate-50/50 border-slate-100'}`}>
+                  <div className="flex justify-between items-start mb-2">
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${theme === 'dark' ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-100 text-indigo-800'}`}>
+                      {item.banca || 'Banca não informada'}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      {inscricaoAcabando(item.dataInscricao) && (
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium animate-pulse ${theme === 'dark' ? 'bg-rose-900/40 text-rose-300' : 'bg-rose-100 text-rose-800'}`}>
+                          Inscrições a acabar!
+                        </span>
+                      )}
+                      <button onClick={(e) => deletarConcurso(item.id, e)} className={`p-1 rounded transition-colors ${theme === 'dark' ? 'text-slate-500 hover:text-rose-400 hover:bg-slate-700' : 'text-slate-400 hover:text-rose-500 hover:bg-rose-50'}`}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  <h3 className={`text-xl font-bold leading-tight mb-4 ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>{item.concurso}</h3>
+                  
+                  {/* Grid de Informações */}
+                  <div className="grid grid-cols-2 gap-y-3 gap-x-4 text-sm">
+                    <div className={`flex items-center ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                      <DollarSign size={16} className="mr-1.5 text-emerald-500" />
+                      <span className={`font-semibold ${theme === 'dark' ? 'text-emerald-400' : 'text-slate-700'}`}>{item.salario || 'A definir'}</span>
+                    </div>
+                    <div className={`flex items-center ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                      <Clock size={16} className="mr-1.5 text-blue-500" />
+                      <span>{item.horas ? `${item.horas}h semanais` : 'Não info.'}</span>
+                    </div>
+                    <div className={`flex items-center ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                      <Calendar size={16} className="mr-1.5 text-orange-500" />
+                      <div>
+                        <p className={`text-[10px] uppercase font-bold tracking-wider ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>Prova</p>
+                        <p className={`font-medium ${theme === 'dark' ? 'text-slate-200' : 'text-slate-700'}`}>{formatarData(item.dataProva)}</p>
+                      </div>
+                    </div>
+                    <div className={`flex items-center ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                      <Calendar size={16} className="mr-1.5 text-rose-500" />
+                      <div>
+                        <p className={`text-[10px] uppercase font-bold tracking-wider ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>Fim Inscrição</p>
+                        <p className={`font-medium ${theme === 'dark' ? 'text-slate-200' : 'text-slate-700'}`}>{formatarData(item.dataInscricao)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Rodapé do Card */}
+                <div className={`px-5 py-4 flex flex-col gap-3 ${theme === 'dark' ? 'bg-slate-800' : 'bg-white'}`}>
+                  <div className="flex justify-between items-center text-sm mb-1">
+                    <span className={theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}>Valor da inscrição:</span>
+                    <span className={`font-semibold ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>{item.valor || 'Grátis/Não info.'}</span>
+                  </div>
+                  
+                  <div className="flex gap-2">
+                    {item.edital && (
+                      <a href={item.edital} target="_blank" rel="noopener noreferrer"
+                        className={`flex-1 flex justify-center items-center gap-1.5 px-3 py-2 rounded-lg font-medium transition-colors text-sm border ${theme === 'dark' ? 'bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border-indigo-500/20' : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-100'}`}
+                      >
+                        <FileText size={16} /> Edital
+                      </a>
+                    )}
+                    {item.linkUtil && (
+                      <a href={item.linkUtil} target="_blank" rel="noopener noreferrer"
+                        className={`flex-1 flex justify-center items-center gap-1.5 px-3 py-2 rounded-lg font-medium transition-colors text-sm border ${theme === 'dark' ? 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'}`}
+                      >
+                        <LinkIcon size={16} /> Página
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          
+        ) : (
+          
+          /* MODO LISTA (Dropdown/Acordeão) */
+          <div className="space-y-3">
+            {concursosFiltrados.map((item) => (
+              <div key={item.id} className={`rounded-xl shadow-sm border overflow-hidden transition-all ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                
+                {/* Resumo da Linha (Sempre visível) */}
+                <div 
+                  onClick={() => toggleExpand(item.id)}
+                  className={`p-4 cursor-pointer flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-50/50 ${theme === 'dark' ? 'hover:bg-slate-700/30' : ''}`}
+                >
+                  <div className="flex-1 flex flex-col md:flex-row md:items-center gap-2 md:gap-6">
+                    <div className="flex items-center gap-3 w-full md:w-1/3">
+                      <span className={`px-2.5 py-1 rounded-md text-xs font-bold whitespace-nowrap ${theme === 'dark' ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-100 text-indigo-800'}`}>
+                        {item.banca || 'S/ Banca'}
+                      </span>
+                      <h3 className={`font-bold truncate ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`} title={item.concurso}>
+                        {item.concurso}
+                      </h3>
+                    </div>
+                    
+                    <div className="flex flex-wrap md:flex-nowrap items-center gap-4 text-sm w-full md:w-2/3">
+                      <div className="flex items-center w-28">
+                        <DollarSign size={16} className="mr-1.5 text-emerald-500" />
+                        <span className={`font-semibold ${theme === 'dark' ? 'text-emerald-400' : 'text-slate-700'}`}>{item.salario || '-'}</span>
+                      </div>
+                      <div className={`flex items-center w-36 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-600'}`}>
+                        <Calendar size={16} className="mr-1.5 text-orange-500" />
+                        <span>Prova: <span className="font-medium">{formatarData(item.dataProva)}</span></span>
+                      </div>
+                      {inscricaoAcabando(item.dataInscricao) && (
+                        <span className={`ml-auto md:ml-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium animate-pulse ${theme === 'dark' ? 'bg-rose-900/40 text-rose-300' : 'bg-rose-100 text-rose-800'}`}>
+                          Inscrição a acabar!
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center justify-end gap-3 md:gap-4">
+                    <button onClick={(e) => deletarConcurso(item.id, e)} className={`p-1.5 rounded-md transition-colors ${theme === 'dark' ? 'text-slate-500 hover:bg-slate-700 hover:text-rose-400' : 'text-slate-400 hover:bg-rose-50 hover:text-rose-500'}`}>
+                      <Trash2 size={18} />
+                    </button>
+                    <div className={`p-1 rounded-full ${theme === 'dark' ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-500'}`}>
+                      {expandedId === item.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Detalhes (Expandido) */}
+                {expandedId === item.id && (
+                  <div className={`p-5 border-t ${theme === 'dark' ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-50 border-slate-100'}`}>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      <div className="md:col-span-2 grid grid-cols-2 gap-4">
+                        <div>
+                          <p className={`text-xs uppercase font-bold tracking-wider mb-1 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>Data Inscrição</p>
+                          <p className={`font-medium ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>Até {formatarData(item.dataInscricao)}</p>
+                        </div>
+                        <div>
+                          <p className={`text-xs uppercase font-bold tracking-wider mb-1 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>Carga Horária</p>
+                          <p className={`font-medium ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>{item.horas ? `${item.horas}h semanais` : 'Não informada'}</p>
+                        </div>
+                        <div>
+                          <p className={`text-xs uppercase font-bold tracking-wider mb-1 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>Valor da Taxa</p>
+                          <p className={`font-medium ${theme === 'dark' ? 'text-slate-200' : 'text-slate-800'}`}>{item.valor || 'Grátis / Não info.'}</p>
+                        </div>
+                      </div>
+                      
+                      <div className="md:col-span-2 flex flex-col justify-center gap-3">
+                        {item.edital && (
+                          <a href={item.edital} target="_blank" rel="noopener noreferrer"
+                            className={`flex justify-center items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-colors text-sm border ${theme === 'dark' ? 'bg-indigo-600 hover:bg-indigo-500 text-white border-transparent' : 'bg-indigo-600 hover:bg-indigo-700 text-white border-transparent'}`}
+                          >
+                            <FileText size={18} /> Aceder ao Edital Completo
+                          </a>
+                        )}
+                        {item.linkUtil && (
+                          <a href={item.linkUtil} target="_blank" rel="noopener noreferrer"
+                            className={`flex justify-center items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-colors text-sm border ${theme === 'dark' ? 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-600' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 shadow-sm'}`}
+                          >
+                            <LinkIcon size={18} /> Página Oficial / Inscrição
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </main>
+
+      {/* Modal Adicionar Concurso */}
+      {isModalAberto && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+            {/* Overlay */}
+            <div 
+              className="fixed inset-0 transition-opacity bg-slate-900/70 backdrop-blur-sm" 
+              onClick={() => setIsModalAberto(false)}
+            ></div>
+
+            {/* Modal Panel */}
+            <div className={`relative inline-block w-full max-w-2xl overflow-hidden text-left align-middle transition-all transform shadow-2xl rounded-2xl ${theme === 'dark' ? 'bg-slate-800 border border-slate-700' : 'bg-white'}`}>
+              <div className={`flex items-center justify-between px-6 py-4 border-b ${theme === 'dark' ? 'border-slate-700 bg-slate-800/50' : 'border-slate-100 bg-slate-50'}`}>
+                <h3 className={`text-lg font-bold ${theme === 'dark' ? 'text-slate-100' : 'text-slate-900'}`}>Adicionar Novo Concurso</h3>
+                <button 
+                  onClick={() => setIsModalAberto(false)}
+                  className={`transition-colors ${theme === 'dark' ? 'text-slate-400 hover:text-slate-200' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <form onSubmit={handleSubmit} className="px-6 py-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  
+                  {/* Nome do Concurso */}
+                  <div className="sm:col-span-2">
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Nome do Concurso *</label>
+                    <input required type="text" name="concurso" value={form.concurso} onChange={handleInputChange}
+                      placeholder="Ex: Polícia Federal - Agente"
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+                  
+                  {/* Banca */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Banca Organizadora *</label>
+                    <input required type="text" name="banca" value={form.banca} onChange={handleInputChange}
+                      placeholder="Ex: Cebraspe, FGV"
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+
+                  {/* Salário */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Salário Inicial</label>
+                    <input type="text" name="salario" value={form.salario} onChange={handleInputChange}
+                      placeholder="Ex: R$ 5.000,00"
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+
+                  {/* Data da Prova */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Data da Prova</label>
+                    <input type="date" name="dataProva" value={form.dataProva} onChange={handleInputChange}
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 css-date-dark' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                      style={theme === 'dark' ? { colorScheme: 'dark' } : {}}
+                    />
+                  </div>
+
+                  {/* Limite de Inscrição */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Limite de Inscrição *</label>
+                    <input required type="date" name="dataInscricao" value={form.dataInscricao} onChange={handleInputChange}
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                      style={theme === 'dark' ? { colorScheme: 'dark' } : {}}
+                    />
+                  </div>
+
+                  {/* Horas Semanais */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Carga Horária Semanal</label>
+                    <input type="number" name="horas" value={form.horas} onChange={handleInputChange}
+                      placeholder="Ex: 40"
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+
+                  {/* Valor da Inscrição */}
+                  <div>
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Valor da Inscrição</label>
+                    <input type="text" name="valor" value={form.valor} onChange={handleInputChange}
+                      placeholder="Ex: R$ 120,00"
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+
+                  {/* Link do Edital */}
+                  <div className="sm:col-span-2">
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Link do Edital (PDF ou Página) *</label>
+                    <input required type="url" name="edital" value={form.edital} onChange={handleInputChange}
+                      placeholder="https://..."
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+
+                  {/* Link Útil */}
+                  <div className="sm:col-span-2">
+                    <label className={`block text-sm font-medium mb-1.5 ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>Link da Página de Inscrição / Útil</label>
+                    <input type="url" name="linkUtil" value={form.linkUtil} onChange={handleInputChange}
+                      placeholder="https://..."
+                      className={`w-full px-3 py-2.5 border rounded-lg outline-none transition-all ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-slate-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500' : 'bg-white border-slate-300 text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500'}`}
+                    />
+                  </div>
+                </div>
+
+                <div className={`mt-8 flex justify-end gap-3 pt-5 border-t ${theme === 'dark' ? 'border-slate-700' : 'border-slate-100'}`}>
+                  <button
+                    type="button"
+                    onClick={() => setIsModalAberto(false)}
+                    className={`px-4 py-2 border rounded-lg font-medium transition-colors ${theme === 'dark' ? 'border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 font-medium transition-colors shadow-sm"
+                  >
+                    Guardar Concurso
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
